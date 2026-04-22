@@ -310,9 +310,13 @@ def build_dataverse_extras_rows(controls):
 
 
 def build_dataverse_compliance_rows(controls):
-    """Map generic rows to crdbf_Compliance CSV rows (main table)."""
+    """Map generic rows to crdbf_Compliance CSV rows (main table).
+
+    hnlz_reihenfolge is assigned in catalog-walk order (the order BSI uses
+    in the OSCAL file) with step 10 to allow manual insertions later.
+    """
     out = []
-    for r in controls:
+    for idx, r in enumerate(controls):
         alt = r["alt_identifier"]
         out.append({
             "crdbf_complianceid":          compliance_guid(alt),
@@ -320,6 +324,7 @@ def build_dataverse_compliance_rows(controls):
             "crdbf_titel":                 r["title"],
             "new_anforderung":             r["statement_resolved"],
             "new_guidance":                r["guidance_resolved"],
+            "hnlz_reihenfolge":            (idx + 1) * 10,
             "hnlz_compliancepakete":       PACKAGE_GUID,
             "hnlz_compgrundschutzextra":   extras_guid(alt),
         })
