@@ -1,0 +1,110 @@
+name: Sync Grundschutz++ catalog
+
+on:
+  schedule:
+    # Täglich 04:17 UTC — BSI-Commits vom Vortag sollten dann da sein
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Release erzwingen, auch wenn Upstream-Commit unverändert ist'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: write   # für Release-Erstellung
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout distribution repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install openpyxl
+
+      - name: Clone BSI upstream (sparse, only Grundschutz++)
+        run: |
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://github.com/BSI-Bund/Stand-der-Technik-Bibliothek.git bsi-upstream
+          git -C bsi-upstream sparse-checkout set "Anwenderkataloge/Grundschutz++"
+
+      - name: Read upstream commit
+        id: upstream
+        run: |
+          COMMIT=$(git -C bsi-upstream log -1 --format=%H \
+            -- "Anwenderkataloge/Grundschutz++/Grundschutz++-catalog.json")
+          echo "commit=$COMMIT"         >> "$GITHUB_OUTPUT"
+          echo "short=${COMMIT:0:7}"    >> "$GITHUB_OUTPUT"
+          echo "tag=grundschutz-pp-${COMMIT:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.upstream.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip (no changes)
+        if: steps.check.outputs.exists == 'true' && inputs.force_release != 'true'
+        run: |
+          echo "Release ${{ steps.upstream.outputs.tag }} existiert bereits. Upstream unverändert. Nichts zu tun."
+
+      - name: Run flattener
+        if: steps.check.outputs.exists == 'false' || inputs.force_release == 'true'
+        run: |
+          python scripts/flatten_grundschutz.py \
+            --catalog   bsi-upstream/Anwenderkataloge/Grundschutz++/Grundschutz++-catalog.json \
+            --output-dir out \
+            --repo-root bsi-upstream
+
+      - name: Download previous release payload for diff
+        if: steps.check.outputs.exists == 'false' || inputs.force_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p previous
+          LATEST=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [ -n "$LATEST" ]; then
+            echo "Downloade Vorgänger-Release $LATEST"
+            gh release download "$LATEST" -p 'grundschutz-pp-flat.json' -D previous/ || true
+          else
+            echo "Kein Vorgänger-Release — dies ist die erste Veröffentlichung."
+          fi
+
+      - name: Build release notes
+        if: steps.check.outputs.exists == 'false' || inputs.force_release == 'true'
+        run: |
+          python scripts/build_release_notes.py \
+            out/grundschutz-pp-flat.json \
+            previous/grundschutz-pp-flat.json \
+            out/CHANGELOG.md
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.exists == 'false' || inputs.force_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.upstream.outputs.tag }}" \
+            --title "Grundschutz++ ${{ steps.upstream.outputs.short }}" \
+            --notes-file out/CHANGELOG.md \
+            out/grundschutz-pp-flat.json \
+            out/manifest.json \
+            out/grundschutz_controls.csv \
+            out/grundschutz_control_links.csv \
+            out/grundschutz_groups.csv \
+            out/grundschutz_controls.xlsx \
+            out/dataverse-import/crdbf_compgrundschutzextras.csv \
+            out/dataverse-import/crdbf_compliance.csv
